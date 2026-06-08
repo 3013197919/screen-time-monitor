@@ -46,7 +46,7 @@ export default function TodayPage() {
 
   useEffect(() => {
     fetchTodaySummary();
-    const id = setInterval(() => fetchTodaySummary(), 10000);
+    const id = setInterval(() => fetchTodaySummary(), 2000);
     return () => clearInterval(id);
   }, [fetchTodaySummary]);
 

@@ -108,7 +108,7 @@ export class WindowTracker {
     this.timer = null;
     this.isIdle = false;
     this.lastSummaryUpsertTime = Date.now();
-    this.summaryUpsertIntervalMs = 60 * 1000; // Upsert summary every 60 seconds
+    this.summaryUpsertIntervalMs = 3 * 1000; // Upsert summary every 3 seconds (near-realtime)
   }
 
   /**
@@ -126,7 +126,8 @@ export class WindowTracker {
     this.status = 'running';
     this.isIdle = false;
     this.lastSwitchTime = Date.now();
-    this.lastSummaryUpsertTime = Date.now();
+    // Force first summary upsert on second poll (~4s delay) instead of waiting 60s
+    this.lastSummaryUpsertTime = 0;
 
     // v4 E-04: Notify ReminderService
     this.callbacks.onTrackingStateChange?.('started');
