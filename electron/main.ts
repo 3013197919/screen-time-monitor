@@ -6,6 +6,7 @@ import {
   shell,
   ipcMain,
   dialog,
+  nativeImage,
 } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import { join } from 'path';
@@ -118,6 +119,15 @@ function createMainWindow(): BrowserWindow {
   // Log renderer errors
   mainWindow.webContents.on('did-fail-load', (_event, code, desc, url) => {
     console.error('[Main] Renderer failed to load:', code, desc, url);
+  });
+
+  // Hide window instead of closing — keep the app alive in tray
+  mainWindow.on('close', (event) => {
+    if (!app.isQuitting) {
+      event.preventDefault();
+      mainWindow?.hide();
+      console.log('[Main] Window hidden to tray.');
+    }
   });
 
   mainWindow.on('closed', () => {
@@ -1224,7 +1234,10 @@ if (!gotSingleInstanceLock) {
   app.quit();
 } else {
   app.on('second-instance', (): void => {
-    if (mainWindow) {
+    // If window was closed (hidden to tray), recreate it
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      createMainWindow();
+    } else {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.show();
       mainWindow.focus();
@@ -1308,6 +1321,7 @@ if (!gotSingleInstanceLock) {
   });
 
   app.on('before-quit', (): void => {
+    app.isQuitting = true;
     cleanup();
   });
 

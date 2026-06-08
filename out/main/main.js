@@ -1617,6 +1617,13 @@ function createMainWindow() {
   mainWindow.webContents.on("did-fail-load", (_event, code, desc, url) => {
     console.error("[Main] Renderer failed to load:", code, desc, url);
   });
+  mainWindow.on("close", (event) => {
+    if (!electron.app.isQuitting) {
+      event.preventDefault();
+      mainWindow?.hide();
+      console.log("[Main] Window hidden to tray.");
+    }
+  });
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
@@ -2452,7 +2459,9 @@ if (!gotSingleInstanceLock) {
   electron.app.quit();
 } else {
   electron.app.on("second-instance", () => {
-    if (mainWindow) {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      createMainWindow();
+    } else {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.show();
       mainWindow.focus();
@@ -2513,6 +2522,7 @@ if (!gotSingleInstanceLock) {
   electron.app.on("window-all-closed", () => {
   });
   electron.app.on("before-quit", () => {
+    electron.app.isQuitting = true;
     cleanup();
   });
   electron.app.on("activate", () => {
