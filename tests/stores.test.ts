@@ -76,9 +76,12 @@ describe('settingsStore', () => {
     expect(state.limits).toEqual([]);
   });
 
-  it('setAutoStart updates local state', () => {
-    useSettingsStore.getState().setAutoStart(true);
-    expect(useSettingsStore.getState().autoStart).toBe(true);
+  it('setAutoStart rolls back on IPC failure', async () => {
+    // In test env, window.electronAPI is undefined, so setAutoStart
+    // will fail and roll back to the previous value (false).
+    await expect(useSettingsStore.getState().setAutoStart(true)).rejects.toThrow();
+    expect(useSettingsStore.getState().autoStart).toBe(false);
+    expect(useSettingsStore.getState().autoStartLoading).toBe(false);
   });
 
   it('setIdleThreshold updates value', () => {

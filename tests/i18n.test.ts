@@ -13,8 +13,8 @@ describe('i18n translation key alignment', () => {
     const zhKeys = Object.keys(zhCN).sort();
     const expected = [
       'about', 'app', 'chart', 'common', 'custom',
-      'error', 'language', 'monthly', 'nav', 'settings',
-      'statusBar', 'today', 'tray', 'weekly',
+      'error', 'language', 'monthly', 'nav', 'onboarding',
+      'reminder', 'settings', 'statusBar', 'today', 'tray', 'weekly',
     ];
     expect(zhKeys).toEqual(expected);
   });
