@@ -2,10 +2,6 @@ appId: com.screen-time-monitor.app
 productName: Screen Time Monitor
 copyright: Copyright © 2026 Screen Time Monitor Team
 
-directories:
-  output: dist
-  buildResources: resources
-
 files:
   - out/**/*
   - package.json
