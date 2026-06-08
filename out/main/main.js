@@ -757,7 +757,17 @@ class NotificationService {
 }
 let activeWinFn = null;
 try {
-  activeWinFn = require("active-win");
+  const mod = require("active-win");
+  if (typeof mod === "function") {
+    activeWinFn = mod;
+  } else if (mod && typeof mod.activeWindow === "function") {
+    activeWinFn = mod.activeWindow;
+  } else if (mod && typeof mod.default === "function") {
+    activeWinFn = mod.default;
+  }
+  if (!activeWinFn) {
+    console.log("[WindowTracker] active-win module loaded but no callable export found.");
+  }
 } catch {
   activeWinFn = null;
   console.log("[WindowTracker] active-win not available — running in mock mode.");

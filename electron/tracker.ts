@@ -6,6 +6,7 @@ import { basename } from 'path';
 
 // ── active-win with fallback for development environments ─────
 
+/** Callable active-win function (async version). */
 let activeWinFn: ((options?: {
   screenRecordingPermission?: boolean;
 }) => Promise<{
@@ -18,7 +19,21 @@ let activeWinFn: ((options?: {
 
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  activeWinFn = require('active-win');
+  const mod = require('active-win');
+
+  // active-win ≥ v8 is pure ESM; the CJS wrapper may expose `activeWindow`
+  // as a named export instead of a default function.
+  // Handle both APIs: old default-export (function) and new named-export (object).
+  if (typeof mod === 'function') {
+    activeWinFn = mod;
+  } else if (mod && typeof mod.activeWindow === 'function') {
+    activeWinFn = mod.activeWindow;
+  } else if (mod && typeof mod.default === 'function') {
+    activeWinFn = mod.default;
+  }
+  if (!activeWinFn) {
+    console.log('[WindowTracker] active-win module loaded but no callable export found.');
+  }
 } catch {
   // Development environment without native module — return null (tracker will skip)
   activeWinFn = null;
