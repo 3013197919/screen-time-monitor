@@ -10,6 +10,7 @@ import {
 } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import { join } from 'path';
+import { existsSync, readFileSync } from 'fs';
 import { Database } from './db/database';
 import { Queries } from './db/queries';
 import { WindowTracker } from './tracker';
@@ -50,6 +51,17 @@ function getPrevMondayStr(mondayStr: string): string {
   return d.toISOString().slice(0, 10);
 }
 
+/**
+ * Resolve a resource file path that works in both dev and production (ASAR-safe).
+ * In production, use `process.resourcesPath` (the `resources/` folder next to app.asar).
+ * In development, use `__dirname`-relative path.
+ */
+function getResourcePath(filename: string): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, filename)
+    : join(__dirname, '../../resources', filename);
+}
+
 /** Main application window reference. */
 let mainWindow: BrowserWindow | null = null;
 
@@ -74,6 +86,9 @@ let focusAutomation: FocusAutomationService | null = null;
 /** Application version from package.json. */
 const APP_VERSION: string = app.getVersion();
 
+/** Quit flag — set to true when app is genuinely quitting (not just hiding to tray). */
+let isQuitting = false;
+
 /**
  * Create the main BrowserWindow with default dimensions and security settings.
  */
@@ -91,7 +106,7 @@ function createMainWindow(): BrowserWindow {
     minWidth: 800,
     minHeight: 600,
     title: 'Screen Time Monitor',
-    icon: join(__dirname, '../../resources/icon.png'),
+    icon: getResourcePath('icon.png'),
     show: false,
     webPreferences: {
       preload: preloadPath,
@@ -123,7 +138,7 @@ function createMainWindow(): BrowserWindow {
 
   // Hide window instead of closing — keep the app alive in tray
   mainWindow.on('close', (event) => {
-    if (!app.isQuitting) {
+    if (!isQuitting) {
       event.preventDefault();
       mainWindow?.hide();
       console.log('[Main] Window hidden to tray.');
@@ -196,18 +211,136 @@ function initDatabase(): void {
 }
 
 /**
+ * Create a fallback tray icon (solid indigo circle on opaque background)
+ * for when the real tray-icon.png file cannot be loaded.
+ *
+ * Returns a 32×32 NativeImage — compatible with HiDPI Windows displays.
+ */
+function createFallbackTrayIcon(): Electron.NativeImage {
+  const size = 32;
+  const pixels = Buffer.alloc(size * size * 4, 255); // solid white (opaque)
+  const cx = (size - 1) / 2;
+  const cy = (size - 1) / 2;
+  const radius = size * 0.4;
+  const r = 99, g = 102, b = 241; // indigo #6366F1
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const dx = x - cx;
+      const dy = y - cy;
+      if (Math.sqrt(dx * dx + dy * dy) <= radius) {
+        const idx = (y * size + x) * 4;
+        pixels[idx] = r;
+        pixels[idx + 1] = g;
+        pixels[idx + 2] = b;
+        pixels[idx + 3] = 255;
+      }
+    }
+  }
+
+  // Encode raw RGBA pixels as a valid PNG buffer
+  const zlib = require('zlib');
+  // Minimal PNG encoder for raw RGBA → PNG
+  const sig = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const ihdr = Buffer.alloc(25); // len(4) + "IHDR"(4) + data(13) + crc(4)
+  ihdr.writeUInt32BE(13, 0); // data length
+  ihdr.write('IHDR', 4);
+  ihdr.writeUInt32BE(size, 8);  // width
+  ihdr.writeUInt32BE(size, 12); // height
+  ihdr[16] = 8;  // bit depth
+  ihdr[17] = 6;  // color type RGBA
+  ihdr[18] = 0;  // compression
+  ihdr[19] = 0;  // filter
+  ihdr[20] = 0;  // interlace
+
+  // CRC-32 for IHDR
+  const crcTable: number[] = [];
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    crcTable[n] = c;
+  }
+  function crc32(buf: Buffer): number {
+    let crc = 0xFFFFFFFF;
+    for (let i = 0; i < buf.length; i++) crc = crcTable[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8);
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+  }
+  const ihdrCrc = Buffer.alloc(4);
+  ihdrCrc.writeUInt32BE(crc32(ihdr.slice(4, 21)), 0);
+  ihdr.set(ihdrCrc, 21);
+
+  // IDAT — raw scanlines (1 filter byte per row)
+  const raw = Buffer.alloc(size * (1 + size * 4));
+  for (let y = 0; y < size; y++) {
+    raw[y * (1 + size * 4)] = 0; // filter: None
+    pixels.copy(raw, y * (1 + size * 4) + 1, y * size * 4, (y + 1) * size * 4);
+  }
+  const compressed = zlib.deflateSync(raw, { level: 9 });
+  const idat = Buffer.alloc(8 + compressed.length + 4);
+  idat.writeUInt32BE(compressed.length, 0);
+  idat.write('IDAT', 4);
+  compressed.copy(idat, 8);
+  idat.writeUInt32BE(crc32(idat.slice(4, 8 + compressed.length)), 8 + compressed.length);
+
+  // IEND
+  const iend = Buffer.alloc(12);
+  iend.writeUInt32BE(0, 0);
+  iend.write('IEND', 4);
+  iend.writeUInt32BE(crc32(iend.slice(4, 8)), 8);
+
+  const pngBuf = Buffer.concat([sig, ihdr, idat, iend]);
+  return nativeImage.createFromBuffer(pngBuf, { width: size, height: size });
+}
+
+/**
  * Create a system tray icon with a rich context menu showing today's summary.
+ *
+ * Icon loading strategy (Windows-aware):
+ *   1. Try tray-icon@2x.png (32×32) for HiDPI displays
+ *   2. Fall back to tray-icon.png (16×16)
+ *   3. Last resort: programmatic 32×32 icon with solid background
+ *
+ * Using readFileSync + createFromBuffer instead of createFromPath for
+ * reliable loading in packaged (ASAR) environments.
  */
 function createTray(): void {
   if (!mainWindow) return;
 
-  const trayIconPath: string = join(
-    __dirname,
-    '../../resources/tray-icon.png'
-  );
+  let trayIcon: Electron.NativeImage | null = null;
+
+  // Strategy 1: Try @2x PNG for HiDPI displays
+  const hiDpiPath = getResourcePath('tray-icon@2x.png');
+  const normalPath = getResourcePath('tray-icon.png');
+
+  for (const [label, iconPath] of [
+    ['HiDPI (@2x)', hiDpiPath],
+    ['Standard (1x)', normalPath],
+  ] as const) {
+    if (!existsSync(iconPath)) {
+      console.log(`[Tray] ${label} icon not found at: ${iconPath}`);
+      continue;
+    }
+    try {
+      const pngBuffer = readFileSync(iconPath);
+      trayIcon = nativeImage.createFromBuffer(pngBuffer);
+      if (!trayIcon.isEmpty()) {
+        console.log(`[Tray] Loaded ${label} tray icon (${pngBuffer.length} bytes).`);
+        break;
+      }
+      console.warn(`[Tray] ${label} icon loaded but was empty.`);
+    } catch (err) {
+      console.warn(`[Tray] Failed to read ${label} icon:`, err);
+    }
+  }
+
+  // Strategy 3: Programmatic fallback (opaque background for Windows)
+  if (!trayIcon || trayIcon.isEmpty()) {
+    console.warn('[Tray] All icon files failed — using programmatic fallback icon.');
+    trayIcon = createFallbackTrayIcon();
+  }
 
   try {
-    tray = new Tray(trayIconPath);
+    tray = new Tray(trayIcon);
     tray.setToolTip('Screen Time Monitor');
 
     // Build initial menu (no data yet — shows "Loading...")
@@ -223,7 +356,7 @@ function createTray(): void {
       rebuildTrayMenu();
     }, 60_000);
 
-    console.log('[Tray] Tray icon created with dynamic context menu.');
+    console.log('[Tray] Tray icon created successfully.');
   } catch (err) {
     console.warn('[Tray] Failed to create tray icon:', err);
   }
@@ -269,7 +402,7 @@ function rebuildTrayMenu(): void {
     // ── Control Section ──
     if (isPaused) {
       menuItems.push({
-        label: trayMenuLabels.pauseTracking,
+        label: trayMenuLabels.resumeTracking,
         click: (): void => {
           if (tracker) {
             tracker.resume();
@@ -280,7 +413,7 @@ function rebuildTrayMenu(): void {
       });
     } else {
       menuItems.push({
-        label: trayMenuLabels.resumeTracking,
+        label: trayMenuLabels.pauseTracking,
         click: (): void => {
           if (tracker) {
             tracker.pause();
@@ -317,8 +450,8 @@ function rebuildTrayMenu(): void {
 /** Cached i18n labels for tray menu (updated via IPC). */
 let trayMenuLabels: Record<string, string> = {
   todaySummary: 'Today',
-  pauseTracking: '▶ Resume Tracking',
-  resumeTracking: '⏸ Pause Tracking',
+  pauseTracking: '⏸ Pause Tracking',
+  resumeTracking: '▶ Resume Tracking',
   openPanel: '📊 Open Main Panel',
   quit: '❌ Quit',
   noActivity: '  No activity recorded yet',
@@ -1321,7 +1454,7 @@ if (!gotSingleInstanceLock) {
   });
 
   app.on('before-quit', (): void => {
-    app.isQuitting = true;
+    isQuitting = true;
     cleanup();
   });
 

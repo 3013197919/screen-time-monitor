@@ -2,6 +2,7 @@
 const electron = require("electron");
 const electronUpdater = require("electron-updater");
 const path = require("path");
+const fs = require("fs");
 const BetterSqlite3 = require("better-sqlite3");
 const AutoLaunch = require("auto-launch");
 class Migrations {
@@ -1575,6 +1576,9 @@ function getPrevMondayStr(mondayStr) {
   d.setUTCDate(d.getUTCDate() - 7);
   return d.toISOString().slice(0, 10);
 }
+function getResourcePath(filename) {
+  return electron.app.isPackaged ? path.join(process.resourcesPath, filename) : path.join(__dirname, "../../resources", filename);
+}
 let mainWindow = null;
 let tray = null;
 let db = null;
@@ -1583,6 +1587,7 @@ let tracker = null;
 let reminderService = null;
 let focusAutomation = null;
 const APP_VERSION = electron.app.getVersion();
+let isQuitting = false;
 function createMainWindow() {
   const preloadPath = path.join(__dirname, "../preload/preload.js");
   const rendererPath = path.join(__dirname, "../renderer/index.html");
@@ -1595,7 +1600,7 @@ function createMainWindow() {
     minWidth: 800,
     minHeight: 600,
     title: "Screen Time Monitor",
-    icon: path.join(__dirname, "../../resources/icon.png"),
+    icon: getResourcePath("icon.png"),
     show: false,
     webPreferences: {
       preload: preloadPath,
@@ -1618,7 +1623,7 @@ function createMainWindow() {
     console.error("[Main] Renderer failed to load:", code, desc, url);
   });
   mainWindow.on("close", (event) => {
-    if (!electron.app.isQuitting) {
+    if (!isQuitting) {
       event.preventDefault();
       mainWindow?.hide();
       console.log("[Main] Window hidden to tray.");
@@ -1670,14 +1675,101 @@ function initDatabase() {
   });
   console.log("[DB] Database initialized at", dbPath);
 }
+function createFallbackTrayIcon() {
+  const size = 32;
+  const pixels = Buffer.alloc(size * size * 4, 255);
+  const cx = (size - 1) / 2;
+  const cy = (size - 1) / 2;
+  const radius = size * 0.4;
+  const r = 99, g = 102, b = 241;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const dx = x - cx;
+      const dy = y - cy;
+      if (Math.sqrt(dx * dx + dy * dy) <= radius) {
+        const idx = (y * size + x) * 4;
+        pixels[idx] = r;
+        pixels[idx + 1] = g;
+        pixels[idx + 2] = b;
+        pixels[idx + 3] = 255;
+      }
+    }
+  }
+  const zlib = require("zlib");
+  const sig = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const ihdr = Buffer.alloc(25);
+  ihdr.writeUInt32BE(13, 0);
+  ihdr.write("IHDR", 4);
+  ihdr.writeUInt32BE(size, 8);
+  ihdr.writeUInt32BE(size, 12);
+  ihdr[16] = 8;
+  ihdr[17] = 6;
+  ihdr[18] = 0;
+  ihdr[19] = 0;
+  ihdr[20] = 0;
+  const crcTable = [];
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 3988292384 ^ c >>> 1 : c >>> 1;
+    crcTable[n] = c;
+  }
+  function crc32(buf) {
+    let crc = 4294967295;
+    for (let i = 0; i < buf.length; i++) crc = crcTable[(crc ^ buf[i]) & 255] ^ crc >>> 8;
+    return (crc ^ 4294967295) >>> 0;
+  }
+  const ihdrCrc = Buffer.alloc(4);
+  ihdrCrc.writeUInt32BE(crc32(ihdr.slice(4, 21)), 0);
+  ihdr.set(ihdrCrc, 21);
+  const raw = Buffer.alloc(size * (1 + size * 4));
+  for (let y = 0; y < size; y++) {
+    raw[y * (1 + size * 4)] = 0;
+    pixels.copy(raw, y * (1 + size * 4) + 1, y * size * 4, (y + 1) * size * 4);
+  }
+  const compressed = zlib.deflateSync(raw, { level: 9 });
+  const idat = Buffer.alloc(8 + compressed.length + 4);
+  idat.writeUInt32BE(compressed.length, 0);
+  idat.write("IDAT", 4);
+  compressed.copy(idat, 8);
+  idat.writeUInt32BE(crc32(idat.slice(4, 8 + compressed.length)), 8 + compressed.length);
+  const iend = Buffer.alloc(12);
+  iend.writeUInt32BE(0, 0);
+  iend.write("IEND", 4);
+  iend.writeUInt32BE(crc32(iend.slice(4, 8)), 8);
+  const pngBuf = Buffer.concat([sig, ihdr, idat, iend]);
+  return electron.nativeImage.createFromBuffer(pngBuf, { width: size, height: size });
+}
 function createTray() {
   if (!mainWindow) return;
-  const trayIconPath = path.join(
-    __dirname,
-    "../../resources/tray-icon.png"
-  );
+  let trayIcon = null;
+  const hiDpiPath = getResourcePath("tray-icon@2x.png");
+  const normalPath = getResourcePath("tray-icon.png");
+  for (const [label, iconPath] of [
+    ["HiDPI (@2x)", hiDpiPath],
+    ["Standard (1x)", normalPath]
+  ]) {
+    if (!fs.existsSync(iconPath)) {
+      console.log(`[Tray] ${label} icon not found at: ${iconPath}`);
+      continue;
+    }
+    try {
+      const pngBuffer = fs.readFileSync(iconPath);
+      trayIcon = electron.nativeImage.createFromBuffer(pngBuffer);
+      if (!trayIcon.isEmpty()) {
+        console.log(`[Tray] Loaded ${label} tray icon (${pngBuffer.length} bytes).`);
+        break;
+      }
+      console.warn(`[Tray] ${label} icon loaded but was empty.`);
+    } catch (err) {
+      console.warn(`[Tray] Failed to read ${label} icon:`, err);
+    }
+  }
+  if (!trayIcon || trayIcon.isEmpty()) {
+    console.warn("[Tray] All icon files failed — using programmatic fallback icon.");
+    trayIcon = createFallbackTrayIcon();
+  }
   try {
-    tray = new electron.Tray(trayIconPath);
+    tray = new electron.Tray(trayIcon);
     tray.setToolTip("Screen Time Monitor");
     rebuildTrayMenu();
     tray.on("double-click", () => {
@@ -1687,7 +1779,7 @@ function createTray() {
     setInterval(() => {
       rebuildTrayMenu();
     }, 6e4);
-    console.log("[Tray] Tray icon created with dynamic context menu.");
+    console.log("[Tray] Tray icon created successfully.");
   } catch (err) {
     console.warn("[Tray] Failed to create tray icon:", err);
   }
@@ -1720,7 +1812,7 @@ function rebuildTrayMenu() {
     menuItems.push({ type: "separator" });
     if (isPaused) {
       menuItems.push({
-        label: trayMenuLabels.pauseTracking,
+        label: trayMenuLabels.resumeTracking,
         click: () => {
           if (tracker) {
             tracker.resume();
@@ -1731,7 +1823,7 @@ function rebuildTrayMenu() {
       });
     } else {
       menuItems.push({
-        label: trayMenuLabels.resumeTracking,
+        label: trayMenuLabels.pauseTracking,
         click: () => {
           if (tracker) {
             tracker.pause();
@@ -1762,8 +1854,8 @@ function rebuildTrayMenu() {
 }
 let trayMenuLabels = {
   todaySummary: "Today",
-  pauseTracking: "▶ Resume Tracking",
-  resumeTracking: "⏸ Pause Tracking",
+  pauseTracking: "⏸ Pause Tracking",
+  resumeTracking: "▶ Resume Tracking",
   openPanel: "📊 Open Main Panel",
   quit: "❌ Quit",
   noActivity: "  No activity recorded yet"
@@ -2522,7 +2614,7 @@ if (!gotSingleInstanceLock) {
   electron.app.on("window-all-closed", () => {
   });
   electron.app.on("before-quit", () => {
-    electron.app.isQuitting = true;
+    isQuitting = true;
     cleanup();
   });
   electron.app.on("activate", () => {

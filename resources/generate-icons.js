@@ -100,18 +100,30 @@ function crc32(buf) {
 // ── Icon Drawing ───────────────────────────────────────────────
 
 /**
- * Draw a blue filled circle on a transparent RGBA buffer.
+ * Draw a blue filled circle on an RGBA buffer.
  *
- * @param width   - Icon width.
- * @param height  - Icon height.
- * @param r       - Circle radius.
- * @param g       - Circle color green.
- * @param b       - Circle color blue.
- * @param a       - Circle alpha.
+ * @param width    - Icon width.
+ * @param height   - Icon height.
+ * @param r        - Circle color red.
+ * @param g        - Circle color green.
+ * @param b        - Circle color blue.
+ * @param bgR      - Background color red (default 255 = white).
+ * @param bgG      - Background color green.
+ * @param bgB      - Background color blue.
+ * @param bgA      - Background alpha (0 = transparent, 255 = opaque).
  * @returns Flat RGBA pixel buffer.
  */
-function drawCircleIcon(width, height, r, g, b, a) {
-  const pixels = Buffer.alloc(width * height * 4, 0);
+function drawCircleIcon(width, height, r, g, b, bgR = 255, bgG = 255, bgB = 255, bgA = 255) {
+  // Initialize with solid background (white by default for Windows compatibility)
+  const pixels = Buffer.alloc(width * height * 4);
+  for (let i = 0; i < width * height; i++) {
+    const px = i * 4;
+    pixels[px] = bgR;
+    pixels[px + 1] = bgG;
+    pixels[px + 2] = bgB;
+    pixels[px + 3] = bgA;
+  }
+
   const cx = (width - 1) / 2;
   const cy = (height - 1) / 2;
   const radius = Math.min(width, height) * 0.42;
@@ -126,7 +138,7 @@ function drawCircleIcon(width, height, r, g, b, a) {
         const px = (y * width + x) * 4;
         // Anti-alias edge with a 1px smooth falloff
         const edge = Math.max(0, Math.min(1, radius - dist));
-        const alpha = dist > radius - 1 ? Math.round(a * edge) : a;
+        const alpha = dist > radius - 1 ? Math.round(255 * edge) : 255;
         pixels[px] = r;
         pixels[px + 1] = g;
         pixels[px + 2] = b;
@@ -143,20 +155,20 @@ function generate() {
   console.log('[generate-icons] Creating tray icons...');
 
   // Primary color: Indigo (#6366F1)
-  const R = 99, G = 102, B = 241, A = 255;
+  const R = 99, G = 102, B = 241;
 
-  // 16×16 tray icon
+  // 16×16 tray icon (solid white background for Windows compatibility)
   {
-    const pixels16 = drawCircleIcon(16, 16, R, G, B, A);
+    const pixels16 = drawCircleIcon(16, 16, R, G, B);
     const png16 = encodePNG(16, 16, pixels16);
     const out16 = path.join(OUT_DIR, 'tray-icon.png');
     fs.writeFileSync(out16, png16);
     console.log(`  Created ${out16} (${png16.length} bytes)`);
   }
 
-  // 32×32 HiDPI tray icon
+  // 32×32 HiDPI tray icon (solid white background for Windows compatibility)
   {
-    const pixels32 = drawCircleIcon(32, 32, R, G, B, A);
+    const pixels32 = drawCircleIcon(32, 32, R, G, B);
     const png32 = encodePNG(32, 32, pixels32);
     const out32 = path.join(OUT_DIR, 'tray-icon@2x.png');
     fs.writeFileSync(out32, png32);
@@ -167,6 +179,7 @@ function generate() {
   const svgContent = `<!-- Screen Time Monitor Tray Icon -->
 <!-- Replace this SVG with your own custom tray icon if desired. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <rect width="16" height="16" fill="white"/>
   <circle cx="8" cy="8" r="7" fill="#6366F1"/>
   <text x="8" y="11" text-anchor="middle" font-family="Arial,sans-serif"
         font-size="8" font-weight="bold" fill="white">ST</text>
