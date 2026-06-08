@@ -1,0 +1,187 @@
+sequenceDiagram
+    actor User
+    participant Renderer as 渲染进程<br/>(React App)
+    participant Preload as Preload<br/>(contextBridge)
+    participant Main as 主进程<br/>(main.ts)
+    participant Tracker as WindowTracker
+    participant TrackerSvc as TrackerService
+    participant LimitSvc as LimitService
+    participant Queries
+    participant DB as SQLite<br/>(better-sqlite3)
+    participant Tray as TrayManager
+    participant ExportSvc as ExportService
+    participant OS as Windows OS
+
+    %% ========== 1. 应用启动 ==========
+    rect rgb(240, 248, 255)
+        Note over User,OS: === 1. 应用启动 & 追踪初始化 ===
+        Main->>Main: app.on('ready')
+        Main->>DB: new Database(path, key)
+        DB->>DB: better-sqlite3 + sqlcipher 连接
+        DB->>DB: runMigrations() 建表
+        Main->>Queries: new Queries(db)
+        Main->>TrackerSvc: new TrackerService(db)
+        Main->>LimitSvc: new LimitService(queries, callback)
+        Main->>ExportSvc: new ExportService(queries)
+        Main->>Tray: new TrayManager(mainWindow)
+        Tray->>OS: 创建系统托盘图标
+        Main->>Renderer: 创建 BrowserWindow 加载 index.html
+        Renderer->>Renderer: React 初始化
+        Renderer->>Preload: window.electronAPI.tracker.getStatus()
+        Preload->>Main: ipcRenderer.invoke('tracker:get-status')
+        Main->>TrackerSvc: getStatus()
+        TrackerSvc-->>Main: {is_tracking: false, ...}
+        Main-->>Renderer: TrackerStatus
+        Main->>TrackerSvc: start()
+        TrackerSvc->>Tracker: new WindowTracker(callback)
+        Tracker->>Tracker: start() → setInterval(poll, 1000ms)
+        Tracker-->>TrackerSvc: tracking started
+    end
+
+    %% ========== 2. 窗口切换追踪 ==========
+    rect rgb(255, 248, 240)
+        Note over User,OS: === 2. 窗口切换 → 使用事件记录 ===
+        loop 每秒轮询
+            Tracker->>OS: activeWin() 获取当前活跃窗口
+            OS-->>Tracker: {owner.name: "chrome.exe", title: "GitHub - ..."}
+        end
+        Note over Tracker: 检测到窗口从 A 切换到 B
+        Tracker->>Tracker: 计算会话时长<br/>duration = now - sessionStart
+        Tracker->>TrackerSvc: onAppSwitch({prevApp, prevWindow, duration, newApp, newWindow})
+        TrackerSvc->>Queries: insertEvent(appEvent)
+        Queries->>DB: INSERT INTO app_events (...)
+        DB-->>Queries: ok
+        TrackerSvc->>Queries: upsertDailySummary(appName, date, duration)
+        Queries->>DB: INSERT OR REPLACE INTO daily_summary (...)
+        DB-->>Queries: ok
+        TrackerSvc->>LimitSvc: checkLimits(newApp)
+        LimitSvc->>Queries: getUsageLimits() + getDailySummary(today)
+        Queries->>DB: SELECT FROM usage_limits, daily_summary
+        DB-->>Queries: limits + today usage
+        Queries-->>LimitSvc: limit data
+        alt 超限
+            LimitSvc->>Main: ipc send 'limits:on-limit-reached'
+            Main->>Renderer: webContents.send(limitReachedData)
+            Renderer->>Renderer: 弹窗提醒（P1 软提醒）
+            User->>Renderer: 关闭弹窗继续使用
+        else 未超限
+            LimitSvc-->>TrackerSvc: ok
+        end
+    end
+
+    %% ========== 3. 查看今日概况 ==========
+    rect rgb(240, 255, 240)
+        Note over User,OS: === 3. 用户查看今日概况 ===
+        User->>Renderer: 点击左侧「今日」导航
+        Renderer->>Renderer: TodayPage 挂载
+        Renderer->>Preload: electronAPI.data.getTodaySummary()
+        Preload->>Main: ipcRenderer.invoke('data:get-today-summary')
+        Main->>TrackerSvc: getTodaySummary()
+        TrackerSvc->>Queries: getDailySummary(today)
+        Queries->>DB: SELECT * FROM daily_summary WHERE date = ?
+        DB-->>Queries: DailySummary[]
+        Queries-->>TrackerSvc: today summaries
+        TrackerSvc->>Queries: getAppRanking(today, 10)
+        Queries->>DB: SELECT app_name, SUM(total_duration)<br/>FROM daily_summary WHERE date = ?<br/>GROUP BY app_name ORDER BY SUM DESC LIMIT 10
+        DB-->>Queries: AppRankingRow[]
+        Queries-->>TrackerSvc: top 10 apps
+        TrackerSvc->>TrackerSvc: 计算百分比、格式化时长<br/>构建 hourly_heatmap
+        TrackerSvc-->>Main: TodaySummaryData
+        Main-->>Renderer: {total_seconds, top_apps, heatmap, ...}
+        Renderer->>Renderer: Store 更新 → 组件重渲染
+        Renderer->>User: 显示总时长卡片 + 热力图 + 排行榜
+    end
+
+    %% ========== 4. 托盘交互 ==========
+    rect rgb(255, 240, 255)
+        Note over User,OS: === 4. 系统托盘交互 ===
+        User->>Tray: 右键托盘图标
+        Tray->>Tray: 弹出右键菜单
+        alt 点击「今日概况」
+            User->>Tray: 点击菜单项
+            Tray->>Queries: getDailySummary(today)
+            Queries->>DB: SELECT
+            DB-->>Queries: data
+            Queries-->>Tray: summary text
+            Tray->>OS: 显示 Balloon 提示
+        else 点击「暂停追踪」
+            User->>Tray: 点击菜单项
+            Tray->>Main: 触发暂停
+            Main->>TrackerSvc: pause()
+            TrackerSvc->>Tracker: pause()
+            Tracker->>Tracker: clearInterval(polling)
+            Tracker-->>TrackerSvc: paused
+            Main->>Renderer: webContents.send('tracker:status-change', {is_paused: true})
+            Renderer->>Renderer: Store 更新状态
+            Main->>Tray: updateMenu() → 「继续追踪」
+        else 点击「退出」
+            User->>Tray: 点击菜单项
+            Tray->>Main: app.quit()
+            Main->>TrackerSvc: stop()
+            TrackerSvc->>Tracker: stop()
+            Main->>DB: close()
+            Main->>OS: 进程退出
+        end
+    end
+
+    %% ========== 5. CSV 导出 ==========
+    rect rgb(240, 240, 255)
+        Note over User,OS: === 5. CSV 数据导出 ===
+        User->>Renderer: 设置页 → 选择日期范围 → 点击「导出 CSV」
+        Renderer->>Preload: electronAPI.export.csv(startDate, endDate)
+        Preload->>Main: ipcRenderer.invoke('export:csv', {startDate, endDate})
+        Main->>ExportSvc: exportCsv(startDate, endDate)
+        ExportSvc->>Main: dialog.showSaveDialog({filters: [{name:'CSV',extensions:['csv']}]})
+        Main->>OS: 系统「另存为」对话框
+        OS-->>User: 选择保存路径
+        User->>OS: 确认路径
+        OS-->>Main: selectedPath
+        ExportSvc->>Queries: getExportData(startDate, endDate)
+        Queries->>DB: SELECT app_name, window_title, started_at, ended_at, duration, date<br/>FROM app_events WHERE date BETWEEN ? AND ?
+        DB-->>Queries: ExportRow[]
+        Queries-->>ExportSvc: raw data
+        ExportSvc->>ExportSvc: 格式化为 CSV 字符串<br/>(BOM + header + rows)
+        ExportSvc->>OS: fs.writeFileSync(path, csvString)
+        OS-->>ExportSvc: 文件写入成功
+        ExportSvc-->>Main: savedPath
+        Main-->>Renderer: {success: true, data: savedPath}
+        Renderer->>Renderer: 显示成功 Snackbar
+    end
+
+    %% ========== 6. 开机自启设置 ==========
+    rect rgb(255, 255, 240)
+        Note over User,OS: === 6. 开机自启设置 ===
+        User->>Renderer: 设置页 → 切换「开机自启」Switch
+        Renderer->>Preload: electronAPI.settings.set('autoStart', 'true')
+        Preload->>Main: ipcRenderer.invoke('settings:set', {key, value})
+        Main->>Queries: setSetting('autoStart', 'true')
+        Queries->>DB: INSERT OR REPLACE INTO settings (...)
+        DB-->>Queries: ok
+        alt 启用
+            Main->>OS: app.setLoginItemSettings({openAtLogin: true})
+            Main->>OS: 写入注册表 HKCU\...\Run
+        else 禁用
+            Main->>OS: app.setLoginItemSettings({openAtLogin: false})
+            Main->>OS: 删除注册表项
+        end
+        Main-->>Renderer: {success: true}
+        Renderer->>Renderer: Switch 状态更新
+    end
+
+    %% ========== 7. 应用关闭 ==========
+    rect rgb(248, 248, 248)
+        Note over User,OS: === 7. 应用正常关闭 ===
+        User->>Main: 关闭窗口 / 托盘退出
+        Main->>Main: app.on('before-quit')
+        Main->>TrackerSvc: flushCurrentSession()
+        TrackerSvc->>Queries: upsertDailySummary(currentApp, today, duration)
+        Queries->>DB: INSERT OR REPLACE
+        DB-->>Queries: ok
+        Main->>TrackerSvc: stop()
+        TrackerSvc->>Tracker: stop() + clearInterval
+        Main->>DB: close()
+        DB->>DB: 关闭 SQLite 连接
+        Main->>Tray: destroy()
+        Tray->>OS: 移除托盘图标
+        Main->>OS: 进程退出
+    end

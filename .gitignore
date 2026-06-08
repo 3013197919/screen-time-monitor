@@ -1,0 +1,10 @@
+node_modules/
+dist/
+out/
+*.log
+.DS_Store
+Thumbs.db
+*.zip
+build-log.txt
+pkg.ps1
+pkg.bat

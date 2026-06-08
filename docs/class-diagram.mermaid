@@ -1,0 +1,327 @@
+classDiagram
+    direction TB
+
+    %% ===== 主进程：数据库层 =====
+    class Database {
+        -BetterSqlite3~Database db
+        +constructor(dbPath: string, encryptionKey: string)
+        +getDb() BetterSqlite3~Database
+        +close() void
+        +runMigrations() void
+    }
+
+    class Migrations {
+        +static run(db: BetterSqlite3~Database) void$
+        -static createAppEventsTable(db) void$
+        -static createDailySummaryTable(db) void$
+        -static createUsageLimitsTable(db) void$
+        -static createSettingsTable(db) void$
+        -static createAppCategoriesTable(db) void$
+    }
+
+    class Queries {
+        -BetterSqlite3~Database db
+        +constructor(db: BetterSqlite3~Database)
+        +insertEvent(event: AppEventInput) void
+        +getEventsInRange(start: string, end: string) AppEvent[]
+        +upsertDailySummary(appName: string, date: string, duration: number) void
+        +getDailySummary(date: string) DailySummary[]
+        +getWeeklySummary(weekStart: string) WeeklySummary[]
+        +getMonthlySummary(month: string) MonthlySummary[]
+        +getAppRanking(date: string, limit: number) AppRankingRow[]
+        +getUsageLimits() UsageLimit[]
+        +setUsageLimit(limit: UsageLimitInput) void
+        +deleteUsageLimit(id: number) void
+        +getSetting(key: string) string | null
+        +setSetting(key: string, value: string) void
+        +getExportData(startDate: string, endDate: string) ExportRow[]
+    }
+
+    Database ..> Migrations : uses
+    Database --> Queries : provides connection
+
+    %% ===== 主进程：追踪层 =====
+    class WindowTracker {
+        -NodeJS~Timer pollingInterval
+        -string currentApp
+        -string currentWindow
+        -number sessionStart
+        -boolean isTracking
+        -Function onAppSwitch
+        +constructor(callback: AppSwitchCallback)
+        +start() void
+        +stop() void
+        +pause() void
+        +resume() void
+        +getStatus() TrackerStatus
+        -poll() Promise~void
+    }
+
+    class IdleDetector {
+        -number idleThreshold
+        -NodeJS~Timer checkInterval
+        -boolean isIdle
+        -Function onIdleChange
+        +constructor(threshold: number, callback: IdleCallback)
+        +start() void
+        +stop() void
+        +setThreshold(minutes: number) void
+        -check() void
+    }
+
+    %% ===== 主进程：服务层 =====
+    class TrackerService {
+        -WindowTracker windowTracker
+        -Queries queries
+        -IdleDetector idleDetector
+        -Database db
+        +constructor(db: Database)
+        +start() void
+        +stop() void
+        +pause() void
+        +resume() void
+        +getStatus() TrackerStatus
+        +getTodaySummary() Promise~TodaySummaryData
+        -handleAppSwitch(event: AppSwitchEvent) void
+        -flushCurrentSession() void
+    }
+
+    class LimitService {
+        -Queries queries
+        -Function onLimitReached
+        +constructor(queries: Queries, callback: LimitCallback)
+        +checkLimits(appName: string) LimitCheckResult
+        +getAllLimits() UsageLimit[]
+        +setLimit(appName: string, limitMinutes: number) void
+        +removeLimit(appName: string) void
+    }
+
+    class ExportService {
+        -Queries queries
+        +constructor(queries: Queries)
+        +exportCsv(startDate: string, endDate: string, savePath: string) Promise~string
+        +exportPdf(startDate: string, endDate: string, savePath: string) Promise~string
+    }
+
+    class TrayManager {
+        -Tray tray
+        -Menu menu
+        -BrowserWindow mainWindow
+        +constructor(mainWindow: BrowserWindow, statusProvider: Function)
+        +buildMenu() Menu
+        +updateTodaySummary(summary: string) void
+        +destroy() void
+    }
+
+    class AutoStartManager {
+        +static enable() void$
+        +static disable() void$
+        +static isEnabled() boolean$
+    }
+
+    TrackerService --> WindowTracker : owns
+    TrackerService --> Queries : uses
+    TrackerService --> IdleDetector : owns
+    LimitService --> Queries : uses
+    ExportService --> Queries : uses
+
+    %% ===== 主进程：IPC 层 =====
+    class IpcHandlers {
+        +static register(mainWindow: BrowserWindow, services: Services) void$
+    }
+
+    IpcHandlers --> TrackerService : calls
+    IpcHandlers --> LimitService : calls
+    IpcHandlers --> ExportService : calls
+    IpcHandlers --> Queries : calls
+
+    %% ===== 数据模型（跨进程共享类型） =====
+    class AppEvent {
+        +number id
+        +string app_name
+        +string window_title
+        +string started_at
+        +string ended_at
+        +number duration
+        +string date
+    }
+
+    class DailySummary {
+        +number id
+        +string app_name
+        +string date
+        +number total_duration
+    }
+
+    class UsageLimit {
+        +number id
+        +string app_name
+        +number limit_minutes
+        +boolean enabled
+    }
+
+    class AppUsageItem {
+        +string app_name
+        +number duration
+        +number percentage
+        +string formattedDuration
+    }
+
+    class TodaySummaryData {
+        +number total_seconds
+        +string formatted_total
+        +number active_apps_count
+        +AppUsageItem[] top_apps
+        +number[] hourly_heatmap
+    }
+
+    class WeeklyReportData {
+        +string week_label
+        +object[] daily_totals
+        +AppUsageItem[] app_distribution
+        +object[] trend_data
+        +object previous_week_comparison
+    }
+
+    class MonthlyReportData {
+        +string month_label
+        +object[] weekly_totals
+        +AppUsageItem[] app_distribution
+        +object previous_month_comparison
+    }
+
+    class TrackerStatus {
+        +boolean is_tracking
+        +boolean is_paused
+        +string current_app
+        +number current_session_start
+    }
+
+    class ElectronAPI {
+        +TrackerAPI tracker
+        +DataAPI data
+        +LimitsAPI limits
+        +ExportAPI export
+        +SettingsAPI settings
+        +AppAPI app
+    }
+
+    %% ===== 渲染进程：状态管理 =====
+    class TrackerStore {
+        +TrackerStatus status
+        +TodaySummaryData todayData
+        +WeeklyReportData weeklyData
+        +MonthlyReportData monthlyData
+        +boolean isLoading
+        +string error
+        +fetchTodaySummary() Promise~void
+        +fetchWeeklyReport() Promise~void
+        +fetchMonthlyReport() Promise~void
+        +pauseTracking() Promise~void
+        +resumeTracking() Promise~void
+    }
+
+    class SettingsStore {
+        +boolean autoStart
+        +number idleTimeout
+        +UsageLimit[] limits
+        +boolean isLoading
+        +fetchSettings() Promise~void
+        +fetchLimits() Promise~void
+        +setAutoStart(enabled: boolean) Promise~void
+        +setIdleTimeout(minutes: number) Promise~void
+        +addLimit(appName: string, minutes: number) Promise~void
+        +removeLimit(id: number) Promise~void
+    }
+
+    TrackerStore ..> ElectronAPI : invokes
+    SettingsStore ..> ElectronAPI : invokes
+
+    %% ===== 渲染进程：组件层 =====
+    class AppLayout {
+        +ReactNode children
+    }
+
+    class Sidebar {
+        +string activeRoute
+        +Function onNavigate
+    }
+
+    class TotalTimeCard {
+        +number totalSeconds
+        +string formattedTotal
+    }
+
+    class ActiveHoursHeatmap {
+        +number[] hourlyData
+    }
+
+    class AppRankingList {
+        +AppUsageItem[] apps
+    }
+
+    class TrendLineChart {
+        +object[] data
+        +string xKey
+        +string yKey
+    }
+
+    class WeeklyBarChart {
+        +object[] data
+        +object comparison
+    }
+
+    class DistributionPieChart {
+        +AppUsageItem[] data
+    }
+
+    class LimitList {
+        +UsageLimit[] limits
+        +Function onAdd
+        +Function onDelete
+    }
+
+    class GeneralSettings {
+        +boolean autoStart
+        +number idleTimeout
+        +Function onAutoStartChange
+        +Function onIdleTimeoutChange
+        +Function onExport
+    }
+
+    class ProgressBar {
+        +number value
+        +number maxValue
+        +string label
+    }
+
+    %% ===== 页面组件 =====
+    class TodayPage {
+        +render() ReactNode
+    }
+    class WeeklyPage {
+        +render() ReactNode
+    }
+    class MonthlyPage {
+        +render() ReactNode
+    }
+    class SettingsPage {
+        +render() ReactNode
+    }
+
+    TodayPage --> TotalTimeCard : contains
+    TodayPage --> ActiveHoursHeatmap : contains
+    TodayPage --> AppRankingList : contains
+    WeeklyPage --> TrendLineChart : contains
+    WeeklyPage --> DistributionPieChart : contains
+    MonthlyPage --> WeeklyBarChart : contains
+    MonthlyPage --> DistributionPieChart : contains
+    SettingsPage --> LimitList : contains
+    SettingsPage --> GeneralSettings : contains
+
+    %% ===== 关系说明 =====
+    AppLayout --> Sidebar : contains
+    TodayPage ..> TrackerStore : reads
+    WeeklyPage ..> TrackerStore : reads
+    MonthlyPage ..> TrackerStore : reads
+    SettingsPage ..> SettingsStore : reads

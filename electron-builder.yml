@@ -1,0 +1,39 @@
+appId: com.screen-time-monitor.app
+productName: Screen Time Monitor
+copyright: Copyright © 2026 Screen Time Monitor Team
+
+directories:
+  output: dist
+  buildResources: resources
+
+files:
+  - out/**/*
+  - "!node_modules/**/*"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: resources/icon.png
+  signAndEditExecutable: false
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Screen Time Monitor
+
+extraResources:
+  - from: resources/
+    to: resources/
+    filter:
+      - "*.png"
+
+publish:
+  provider: github
+  owner: screen-time-monitor
+  repo: screen-time-monitor

@@ -1,0 +1,94 @@
+@import "tailwindcss";
+
+/*
+ * Tailwind CSS v4 — Theme Configuration
+ *
+ * With @tailwindcss/vite, theme values are configured via CSS @theme.
+ * This replaces the need for tailwind.config.ts at runtime.
+ * The tailwind.config.ts file is kept for IDE tooling compatibility only.
+ */
+
+@theme {
+  /* Primary palette (Indigo) */
+  --color-primary-50: #EEF2FF;
+  --color-primary-100: #E0E7FF;
+  --color-primary-200: #C7D2FE;
+  --color-primary-300: #A5B4FC;
+  --color-primary-400: #818CF8;
+  --color-primary-500: #6366F1;
+  --color-primary-600: #4F46E5;
+  --color-primary-700: #4338CA;
+  --color-primary-800: #3730A3;
+  --color-primary-900: #312E81;
+  --color-primary: #6366F1;
+
+  /* Accent palette (Pink) */
+  --color-accent: #EC4899;
+  --color-accent-600: #DB2777;
+
+  /* Surface colors */
+  --color-surface: #FFFFFF;
+  --color-surface-dark: #1E1E2E;
+
+  /* Font families */
+  --font-family-sans: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-family-mono: "JetBrains Mono", "Fira Code", monospace;
+}
+
+/*
+ * Global base styles
+ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-family: var(--font-family-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  background-color: #FAFAFA;
+  color: #1F2937;
+  line-height: 1.6;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: #D1D5DB;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: #9CA3AF;
+}
+
+/* Selection styling */
+::selection {
+  background-color: #6366F1;
+  color: #FFFFFF;
+}
+
+/* ================================================================
+ * Chart Color Palette
+ *
+ * Standard palette for all recharts visualizations:
+ * ['#6366F1','#8B5CF6','#EC4899','#F43F5E','#F97316','#EAB308',
+ *  '#22C55E','#14B8A6','#3B82F6','#6366F1']
+ * ================================================================ */
