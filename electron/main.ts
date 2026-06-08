@@ -5,6 +5,7 @@ import {
   Menu,
   shell,
   ipcMain,
+  dialog,
 } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import { join } from 'path';
@@ -76,6 +77,13 @@ const APP_VERSION: string = app.getVersion();
  * Create the main BrowserWindow with default dimensions and security settings.
  */
 function createMainWindow(): BrowserWindow {
+  const preloadPath = join(__dirname, '../preload/preload.js');
+  const rendererPath = join(__dirname, '../renderer/index.html');
+
+  console.log('[Main] __dirname:', __dirname);
+  console.log('[Main] Preload path:', preloadPath);
+  console.log('[Main] Renderer path:', rendererPath);
+
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -85,15 +93,31 @@ function createMainWindow(): BrowserWindow {
     icon: join(__dirname, '../../resources/icon.png'),
     show: false,
     webPreferences: {
-      preload: join(__dirname, '../preload/preload.js'),
+      preload: preloadPath,
       sandbox: false,
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
 
-  mainWindow.on('ready-to-show', () => {
-    mainWindow?.show();
+  // Show window on ready, but also add a safety timeout
+  let shown = false;
+  const doShow = () => {
+    if (!shown) {
+      shown = true;
+      mainWindow?.show();
+      console.log('[Main] Window shown.');
+    }
+  };
+
+  mainWindow.on('ready-to-show', doShow);
+
+  // Fallback: show window after 5s even if renderer isn't ready
+  setTimeout(doShow, 5000);
+
+  // Log renderer errors
+  mainWindow.webContents.on('did-fail-load', (_event, code, desc, url) => {
+    console.error('[Main] Renderer failed to load:', code, desc, url);
   });
 
   mainWindow.on('closed', () => {
@@ -110,7 +134,7 @@ function createMainWindow(): BrowserWindow {
   if (process.env.ELECTRON_RENDERER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'));
+    mainWindow.loadFile(rendererPath);
   }
 
   return mainWindow;
@@ -1208,10 +1232,11 @@ if (!gotSingleInstanceLock) {
   });
 
   app.whenReady().then((): void => {
-    initDatabase();
-    createMainWindow();
-    createTray();
-    registerIpcHandlers();
+    try {
+      initDatabase();
+      createMainWindow();
+      createTray();
+      registerIpcHandlers();
 
     // v4 E-03: Initialize AutoLaunchService and self-repair
     autoLaunchService.init();
@@ -1265,6 +1290,16 @@ if (!gotSingleInstanceLock) {
     initAutoUpdater();
 
     console.log('[App] Screen Time Monitor started — v' + APP_VERSION);
+    } catch (err) {
+      console.error('[App] Fatal startup error:', err);
+      // Fallback: try to show window anyway
+      if (!mainWindow) {
+        createMainWindow();
+      }
+      mainWindow?.show();
+      // Show a dialog box so the user knows something went wrong
+      dialog.showErrorBox('Startup Error', String(err));
+    }
   });
 
   app.on('window-all-closed', (): void => {
