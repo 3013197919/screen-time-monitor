@@ -8,7 +8,7 @@ directories:
 
 files:
   - out/**/*
-  - "!node_modules/**/*"
+  - package.json
 
 win:
   target:
@@ -35,5 +35,5 @@ extraResources:
 
 publish:
   provider: github
-  owner: screen-time-monitor
+  owner: 3013197919
   repo: screen-time-monitor
